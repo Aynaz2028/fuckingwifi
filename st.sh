@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-# Ultimate WiFi Toolkit (Compatible Version - No Monitor Mode)
-
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -45,9 +43,7 @@ require_root(){
 ############################################
 check_dependencies(){
     for cmd in nmcli ip iw; do
-        if ! command -v "$cmd" &>/dev/null; then
-            warn "$cmd not found"
-        fi
+        command -v "$cmd" &>/dev/null || warn "$cmd not found"
     done
 }
 
@@ -96,20 +92,21 @@ restart_network(){
 ############################################
 # INTERFACE
 ############################################
-list_interfaces(){
-    ip -o link show | awk -F': ' '{print $2}' | grep -v lo
+detect_wifi_interface() {
+    INTERFACE=$(nmcli device status | awk '$2=="wifi"{print $1}' | head -n1)
+
+    if [[ -z "$INTERFACE" ]]; then
+        warn "No WiFi interface detected"
+        return 1
+    fi
+
+    log "Auto-detected interface: $INTERFACE"
+    return 0
 }
 
 select_interface(){
-    mapfile -t ifs < <(list_interfaces)
-
-    echo "Available interfaces:"
-    for i in "${!ifs[@]}"; do
-        echo "[$i] ${ifs[$i]}"
-    done
-
-    read -rp "Select: " idx
-    INTERFACE="${ifs[$idx]:-}"
+    nmcli device status
+    read -rp "Enter WiFi interface: " INTERFACE
 
     [[ -z "$INTERFACE" ]] && { warn "Invalid"; return; }
 
@@ -121,26 +118,29 @@ ensure_interface_up(){
 }
 
 ############################################
-# SCANNING (NO MONITOR MODE)
+# SCANNING
 ############################################
 scan_networks(){
-    [[ -z "$INTERFACE" ]] && { warn "Select interface first"; return; }
+    [[ -z "$INTERFACE" ]] && detect_wifi_interface || true
 
     ensure_interface_up
 
-    log "Scanning networks..."
+    log "Scanning..."
 
-    if command -v nmcli &>/dev/null; then
+    RESULT=$(nmcli -f IN-USE,SSID,BSSID,CHAN,SIGNAL,SECURITY device wifi list)
+
+    if [[ -z "$RESULT" || $(echo "$RESULT" | wc -l) -le 1 ]]; then
+        warn "No networks found. Rescanning..."
+        nmcli device wifi rescan &>/dev/null
+        sleep 2
         nmcli -f IN-USE,SSID,BSSID,CHAN,SIGNAL,SECURITY device wifi list
-    elif command -v iw &>/dev/null; then
-        iw dev "$INTERFACE" scan | grep -E 'BSS|SSID|signal'
     else
-        warn "No scanning tool available"
+        echo "$RESULT"
     fi
 }
 
 scan_and_save(){
-    [[ -z "$INTERFACE" ]] && { warn "Select interface"; return; }
+    [[ -z "$INTERFACE" ]] && detect_wifi_interface || true
 
     OUT="$SESSION_DIR/scan_$(date +%s).txt"
 
@@ -150,18 +150,73 @@ scan_and_save(){
 }
 
 ############################################
+# LIVE SCAN
+############################################
+live_scan(){
+    [[ -z "$INTERFACE" ]] && detect_wifi_interface || true
+
+    log "Live scan (Ctrl+C to stop)"
+    sleep 1
+
+    while true; do
+        clear
+        echo "==== LIVE WIFI SCAN ===="
+        echo "Interface: $INTERFACE"
+        echo "Time: $(date)"
+        echo
+
+        nmcli -f IN-USE,SSID,BSSID,CHAN,SIGNAL,SECURITY device wifi list
+
+        sleep 2
+    done
+}
+
+############################################
+# FILTERS
+############################################
+filter_signal(){
+    read -rp "Min signal (0-100): " MIN
+
+    nmcli -f SSID,BSSID,CHAN,SIGNAL,SECURITY device wifi list | \
+    awk -v min="$MIN" 'NR==1 || $4 >= min'
+}
+
+filter_security(){
+    read -rp "Security (WPA2/WPA3/OPEN): " SEC
+
+    nmcli -f SSID,BSSID,CHAN,SIGNAL,SECURITY device wifi list | \
+    grep -i "$SEC"
+}
+
+advanced_filter(){
+    read -rp "Min signal: " MIN
+    read -rp "Security (optional): " SEC
+
+    nmcli -f SSID,BSSID,CHAN,SIGNAL,SECURITY device wifi list | \
+    awk -v min="$MIN" -v sec="$SEC" '
+    NR==1 {print; next}
+    $4 >= min {
+        if(sec=="" || tolower($5) ~ tolower(sec)) print
+    }'
+}
+
+############################################
 # MENU
 ############################################
 menu(){
 while true; do
 clear
 cat <<EOF
-==== FINAL WIFI TOOLKIT ====
+==== WIFI TOOLKIT ====
 1) Check Dependencies
-2) Fix Network (Install/Restart)
+2) Fix Network
 3) Select Interface
 4) Scan Networks
 5) Scan & Save
+6) Live Scan
+7) Filter by Signal
+8) Filter by Security
+9) Advanced Filter
 0) Exit
 EOF
 
@@ -173,6 +228,10 @@ case $c in
 3) select_interface;;
 4) scan_networks;;
 5) scan_and_save;;
+6) live_scan;;
+7) filter_signal;;
+8) filter_security;;
+9) advanced_filter;;
 0) exit 0;;
 *) warn "Invalid";;
 esac
