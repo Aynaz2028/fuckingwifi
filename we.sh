@@ -74,48 +74,50 @@ CREATE TABLE IF NOT EXISTS networks (
 ############################################
 # NETWORK CONTROL
 ############################################
-restart_network(){
-    log "Checking network control..."
+install_network_manager(){
+    log "Ensuring NetworkManager is installed..."
 
-    # Try NetworkManager via nmcli (works even without systemctl)
     if command -v nmcli &>/dev/null; then
-        log "Using nmcli to reconnect network"
+        log "NetworkManager already installed"
+        return
+    fi
+
+    if command -v apt &>/dev/null; then
+        log "Installing NetworkManager via apt"
+        apt update -y && apt install -y network-manager
+    elif command -v dnf &>/dev/null; then
+        log "Installing NetworkManager via dnf"
+        dnf install -y NetworkManager
+    elif command -v yum &>/dev/null; then
+        log "Installing NetworkManager via yum"
+        yum install -y NetworkManager
+    else
+        warn "Unsupported package manager. Install NetworkManager manually."
+        return
+    fi
+
+    systemctl enable NetworkManager 2>/dev/null || true
+    systemctl start NetworkManager 2>/dev/null || true
+
+    log "NetworkManager installation complete"
+}
+
+restart_network(){
+    log "Restarting network via NetworkManager..."
+
+    if ! command -v nmcli &>/dev/null; then
+        warn "NetworkManager not found, attempting install..."
+        install_network_manager
+    fi
+
+    if command -v nmcli &>/dev/null; then
         nmcli networking off || true
         sleep 1
         nmcli networking on || true
         return
     fi
 
-    # Try systemd services
-    if command -v systemctl &>/dev/null; then
-        if systemctl list-unit-files | grep -q '^NetworkManager\\.service'; then
-            systemctl restart NetworkManager && return
-        fi
-        if systemctl list-unit-files | grep -q '^systemd-networkd\\.service'; then
-            systemctl restart systemd-networkd && return
-        fi
-    fi
-
-    # Try legacy service command
-    if command -v service &>/dev/null; then
-        if service --status-all 2>/dev/null | grep -q "networking"; then
-            service networking restart && return
-        fi
-        if service --status-all 2>/dev/null | grep -q "NetworkManager"; then
-            service NetworkManager restart && return
-        fi
-    fi
-
-    # Fallback: reset interface directly
-    if command -v ip &>/dev/null && [[ -n "${INTERFACE:-}" ]]; then
-        log "Resetting interface $INTERFACE"
-        ip link set "$INTERFACE" down || true
-        sleep 1
-        ip link set "$INTERFACE" up || true
-        return
-    fi
-
-    warn "No automatic network control available. Manual reconnect may be required."
+    warn "Failed to control network automatically"
 }
 
 ############################################
